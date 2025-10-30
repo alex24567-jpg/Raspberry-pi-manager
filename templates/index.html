@@ -1,0 +1,302 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Raspberry Pi Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="brand">
+          <div class="logo">RP</div>
+          <div>
+            <h2 style="margin:0">Raspberry Pi Manager</h2>
+            <div class="small">Manage & deploy policies to multiple devices</div>
+          </div>
+        </div>
+        <div class="controls">
+          <button id="themeToggle" class="btn toggle" title="Toggle theme">🌙</button>
+          {% if not logged_in %}
+            <a class="btn secondary" href="/login">Login</a>
+          {% else %}
+            <a class="btn secondary" href="/logout">Logout</a>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <h3 style="margin:0">Devices</h3>
+              <div>
+                <label class="small" style="margin-right:8px"><input type="checkbox" id="selectAll"> Select all</label>
+                <button class="btn secondary" id="deleteSelectedBtn" onclick="deleteSelected()">Delete selected</button>
+              </div>
+            </div>
+            <div class="devices-list">
+              {% for d in devices %}
+                <div class="device-row">
+                  <div class="device-left">
+                    <label><input type="checkbox" class="target-checkbox" value="{{ d.id }}"></label>
+                    <div class="device-badge">{{ d.id[:2].upper() }}</div>
+                    <div>
+                      <div><strong>{{ d.id }}</strong></div>
+                      <div class="small">{{ d.host }} • {{ d.username or '—' }}</div>
+                    </div>
+                  </div>
+                  <div class="controls small">
+                    <span class="small">Port {{ d.port or 22 }}</span>
+                    <button class="btn secondary" onclick="viewLogs('{{ d.id }}')">Logs</button>
+                    <button class="btn secondary" onclick="renameDevice('{{ d.id }}')">Rename</button>
+                    <button class="btn" onclick="showTop('{{ d.id }}')">Top</button>
+                  </div>
+                </div>
+              {% else %}
+                <div class="small">No devices yet</div>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 style="margin-top:0">Add device</h3>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div class="small">Add a new device to manage.</div>
+              <a class="btn" href="/devices/add">Add device</a>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="card">
+            <h3 style="margin-top:0">Deploy policy</h3>
+            <form id="deployForm" onsubmit="return deploy(event)">
+              <textarea id="policyText" name="policy" class="input" rows="8" placeholder="#!/bin/bash\necho hello" {{ 'disabled' if not_logged_in else '' }}></textarea>
+              <div style="display:flex;gap:8px;margin-top:8px;align-items:center;justify-content:space-between">
+                <div style="display:flex;gap:8px;align-items:center">
+                  <select id="policySelect"></select>
+                  <button type="button" class="btn" onclick="loadPolicy()">Load</button>
+                  <button type="button" class="btn" onclick="deletePolicy()">Delete</button>
+                </div>
+                <div style="text-align:right">
+                  <button type="button" class="btn secondary" onclick="savePolicy()">Save policy</button>
+                  <button class="btn" {{ 'disabled' if not_logged_in else '' }}>Deploy</button>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <div class="card">
+            <h4 style="margin:0">Recent deployments</h4>
+            <div style="margin-top:8px;max-height:300px;overflow:auto">
+              {% for d in deployments %}
+                <div class="log-entry {{ 'log-ok' if d.success else 'log-fail' }}">
+                  <div><strong>{{ d.device_id }}</strong> <span class="small">{{ d.timestamp }}</span></div>
+                  <div class="small">{{ 'OK' if d.success else 'FAIL' }}</div>
+                </div>
+              {% else %}
+                <div class="small">No deployments yet</div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer small">Raspberry Pi Manager — blue & white theme</div>
+    </div>
+
+    <!-- Top modal -->
+    <div id="topModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div style="background:white; max-width:95%; width:900px; max-height:80%; overflow:auto; padding:1rem; border-radius:8px; margin:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="margin:0">Top snapshot</h3>
+          <div>
+            <button class="btn secondary" onclick="closeTop()">Close</button>
+          </div>
+        </div>
+        <pre id="topContent" style="white-space:pre-wrap; background:#0f172a; color:#fff; padding:1rem; border-radius:6px; margin-top:1rem; overflow:auto; max-height:60vh;"></pre>
+      </div>
+    </div>
+
+    <script>
+      // Theme toggle: remembers choice in localStorage and toggles dark class on root
+      (function(){
+        const btn = document.getElementById('themeToggle');
+        const root = document.documentElement;
+        function applyTheme(t){
+          if (t === 'dark') {
+            root.classList.add('dark');
+            btn.textContent = '☀️';
+          } else {
+            root.classList.remove('dark');
+            btn.textContent = '🌙';
+          }
+        }
+        const saved = localStorage.getItem('rpm_theme') || 'light';
+        applyTheme(saved);
+        btn.addEventListener('click', () => {
+          const next = root.classList.contains('dark') ? 'light' : 'dark';
+          localStorage.setItem('rpm_theme', next);
+          applyTheme(next);
+        });
+      })();
+
+      async function addDevice(e) {
+        e.preventDefault();
+        const f = new FormData(e.target);
+        const data = Object.fromEntries(f.entries());
+        const res = await fetch('/devices', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+        if (res.status === 403) {
+          alert('You must be logged in to add devices. Redirecting to login.');
+          window.location = '/login';
+          return false;
+        }
+        if (!res.ok) {
+          const txt = await res.text();
+          alert('Error adding device: ' + txt);
+          return false;
+        }
+        const j = await res.json();
+        location.reload();
+        return false;
+      }
+
+      // Policies: load list on page load
+      async function fetchPolicies(){
+        const res = await fetch('/policies');
+        if (res.status === 403) return;
+        const j = await res.json();
+        const sel = document.getElementById('policySelect');
+        sel.innerHTML = '';
+        const emptyOpt = document.createElement('option'); emptyOpt.value=''; emptyOpt.text = '-- select --'; sel.appendChild(emptyOpt);
+        j.policies.forEach(p=>{
+          const o = document.createElement('option'); o.value = p.id; o.text = `${p.name} (${new Date(p.created).toLocaleString()})`; sel.appendChild(o);
+        });
+      }
+
+      async function savePolicy(){
+        const content = document.getElementById('policyText').value;
+        const name = prompt('Policy name', 'policy-'+new Date().toISOString());
+        if (!name) return;
+        const res = await fetch('/policies', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, content})});
+        if (!res.ok) { alert('Error saving policy'); return; }
+        await fetchPolicies();
+        alert('Policy saved');
+      }
+
+      async function loadPolicy(){
+        const sel = document.getElementById('policySelect');
+        const id = sel.value; if (!id) return alert('Select a policy');
+        const res = await fetch(`/policies/${id}`);
+        if (!res.ok) return alert('Error loading policy');
+        const j = await res.json();
+        document.getElementById('policyText').value = j.content;
+      }
+
+      async function deletePolicy(){
+        const sel = document.getElementById('policySelect');
+        const id = sel.value; if (!id) return alert('Select a policy');
+        if (!confirm('Delete policy?')) return;
+        const res = await fetch(`/policies/${id}`, {method:'DELETE'});
+        if (!res.ok) return alert('Error deleting policy');
+        await fetchPolicies();
+        alert('Deleted');
+      }
+
+      // run initial policies fetch
+      fetchPolicies();
+
+      document.getElementById('selectAll').addEventListener('change', function(e){
+        const checked = e.target.checked;
+        document.querySelectorAll('.target-checkbox').forEach(cb => cb.checked = checked);
+      });
+
+      function viewLogs(id){
+        // naive view: fetch deployments and show entries for id
+        fetch('/deployments').then(r=>r.json()).then(j=>{
+          const items = j.deployments.filter(x=>x.device_id===id).slice(0,10);
+          const txt = items.map(i=>`${i.timestamp} - ${i.success ? 'OK' : 'FAIL'}\n${i.output||''}`).join('\n---\n');
+          alert('Logs for '+id+'\n\n'+txt);
+        });
+      }
+
+      async function renameDevice(oldId){
+        const newId = prompt('Rename device '+oldId+' to:', oldId+'-new');
+        if (!newId) return;
+        const res = await fetch('/devices/'+encodeURIComponent(oldId)+'/rename', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({new_id:newId})});
+        if (res.status === 403) { alert('Login required'); window.location='/login'; return; }
+        if (!res.ok) { alert('Rename failed: '+(await res.text())); return; }
+        alert('Renamed'); location.reload();
+      }
+
+      async function deleteSelected(){
+        const checked = Array.from(document.querySelectorAll('.target-checkbox:checked')).map(cb=>cb.value);
+        if (!checked.length) return alert('No devices selected');
+        if (!confirm('Delete selected devices? This will also remove their deployment records.')) return;
+        const res = await fetch('/devices/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids:checked})});
+        if (res.status === 403) { alert('Login required'); window.location='/login'; return; }
+        if (!res.ok) { alert('Delete failed: '+(await res.text())); return; }
+        alert('Deleted'); location.reload();
+      }
+
+      async function deploy(e){
+        e.preventDefault();
+        const f = new FormData(e.target);
+        const data = Object.fromEntries(f.entries());
+        // collect checked device ids
+        const checked = Array.from(document.querySelectorAll('.target-checkbox:checked')).map(cb => cb.value);
+        // if none checked, interpret as all devices
+        data.targets = checked.length ? checked : Array.from(document.querySelectorAll('.target-checkbox')).map(cb => cb.value);
+        const btn = e.target.querySelector('button');
+        btn.disabled = true;
+        // attach selected policy id if any
+        const policySel = document.getElementById('policySelect');
+        if (policySel && policySel.value) {
+          data.policy_id = policySel.value;
+        } else {
+          data.policy = document.getElementById('policyText').value;
+        }
+
+        const res = await fetch('/deploy', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+        if (res.status === 403) {
+          alert('You must be logged in to deploy. Redirecting to login.');
+          window.location = '/login';
+          return false;
+        }
+        const j = await res.json();
+        alert('Deploy complete:\n'+JSON.stringify(j.results, null, 2));
+        btn.disabled = false;
+        location.reload();
+        return false;
+      }
+
+      // Show Top output for a device (requires login)
+      async function showTop(deviceId) {
+        const modal = document.getElementById('topModal');
+        const content = document.getElementById('topContent');
+        content.textContent = 'Loading...';
+        modal.style.display = 'flex';
+        try {
+          const resp = await fetch(`/devices/${encodeURIComponent(deviceId)}/top`);
+          if (!resp.ok) {
+            let j = null;
+            try { j = await resp.json(); } catch(e){}
+            content.textContent = j && j.message ? `Error: ${j.message}` : `HTTP ${resp.status}`;
+            return;
+          }
+          const txt = await resp.text();
+          content.textContent = txt || 'No output';
+        } catch (err) {
+          content.textContent = 'Fetch error: ' + err;
+        }
+      }
+
+      function closeTop(){
+        const modal = document.getElementById('topModal');
+        modal.style.display = 'none';
+      }
+    </script>
+  </body>
+</html>

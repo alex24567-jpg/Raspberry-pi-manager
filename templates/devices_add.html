@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Add device — Raspberry Pi Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <div class="container" style="max-width:720px;margin-top:40px">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0">Add device</h3>
+          <a class="small" href="/">Back</a>
+        </div>
+        <form id="addDeviceForm" onsubmit="return submitAdd(event)">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <input class="input" name="id" placeholder="device id" required>
+            <input class="input" name="host" placeholder="host (ip or hostname)" required>
+            <input class="input" name="username" placeholder="username">
+            <input class="input" name="password" placeholder="password">
+            <input class="input" name="port" placeholder="port (22)">
+          </div>
+          <div style="margin-top:12px;text-align:right">
+            <button class="btn" type="submit">Add device</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script>
+      async function submitAdd(e){
+        e.preventDefault();
+        const f = new FormData(e.target);
+        const data = Object.fromEntries(f.entries());
+        // if port is empty or not provided, set client-side default to 22
+        if (!data.port) {
+          data.port = 22;
+        } else {
+          // coerce numeric strings to integer
+          const n = parseInt(data.port, 10);
+          if (!Number.isNaN(n)) data.port = n;
+        }
+        const res = await fetch('/devices', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+        if (res.status === 403) { alert('Login required'); window.location='/login'; return false; }
+        if (!res.ok) { alert('Error: '+(await res.text())); return false; }
+        alert('Added'); window.location='/'
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Login — Raspberry Pi Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <div class="container" style="max-width:420px;margin-top:60px">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <div class="logo">RP</div>
+          <div>
+            <h2 style="margin:0">Sign in</h2>
+            <div class="small">Enter the admin credentials to continue (default: Admin / TestPassword)</div>
+          </div>
+        </div>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for cat, msg in messages %}
+              <div class="banner">{{ msg }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+        <form method="post">
+            <div style="margin-bottom:8px">
+            <input class="input" name="username" placeholder="username (default: Admin)">
+          </div>
+          <div style="margin-bottom:8px">
+            <input class="input" name="password" type="password" placeholder="Password" required>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <a class="small" href="/">Back</a>
+              &nbsp;·&nbsp;
+              <a class="small" href="/account/change_password">Change password</a>
+            </div>
+            <button class="btn" type="submit">Sign in</button>
+          </div>
+        </form>
+      </div>
+      <div style="text-align:center;margin-top:12px" class="small">Default admin password is set by RPM_ADMIN_PW environment variable</div>
+    </div>
+  </body>
+</html>

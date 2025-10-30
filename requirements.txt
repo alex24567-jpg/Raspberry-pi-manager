@@ -1,0 +1,7 @@
+Flask>=2.0
+paramiko>=2.11
+Jinja2>=3.0
+gunicorn
+SQLAlchemy>=1.4
+Flask-Login>=0.6
+cryptography

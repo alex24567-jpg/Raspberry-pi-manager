@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.pyc
+instance/
+rpm.db
+.env
+.vscode/
+.idea/
+*.sqlite3
+*.log
+.DS_Store
+
+# Python virtualenvs
+venv/
+env/
+
+# editor files
+*.swp
+*~
+
+# secrets
+secrets.json
