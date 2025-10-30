@@ -66,9 +66,4 @@ Both expect a `.venv` virtual environment in the project root.
 - "memoryview: a bytes-like object is required, not 'str'":
    - This indicates the database stored TEXT in a BLOB column. The rename handler now normalizes values on write; restarting the server should pick up fixes. If not, inspect the row data with a DB browser and convert text to bytes or recreate the device entry via the UI.
 
-## Next steps (recommended)
-- Replace the built-in development server with a production WSGI server (gunicorn or equivalent).
-- Move secrets (RPM_SECRET, RPM_FERNET_KEY) to environment variables in your deployment system.
-- Add automated tests (pytest) to cover login, rename, delete and deploy flows.
 
-If you want, I can add a short `tests/` pytest harness and a sample `.env` template. Let me know which you'd like next.
