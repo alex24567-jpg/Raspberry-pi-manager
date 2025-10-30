@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Device Audits — {{ device.id }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <div class="container" style="max-width:900px;margin-top:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Audits for {{ device.id }}</h3>
+        <div>
+          <button class="btn" id="installClientBtn" onclick="installClient()">Install client</button>
+          <button class="btn secondary" id="regenerateTokenBtn" onclick="regenerateToken()">Regenerate token</button>
+          <a class="small" href="/">Back</a>
+        </div>
+      </div>
+      <div style="margin-bottom:8px">
+        <div class="small">Device token: <code id="deviceToken">{{ device.token or 'not-set' }}</code></div>
+      </div>
+
+      {% if audits %}
+        <div class="card">
+          {% for a in audits %}
+            <div style="border-bottom:1px solid #eee;padding:12px">
+              <div style="display:flex;justify-content:space-between">
+                <strong>{{ a.summary }}</strong>
+                <small>{{ a.timestamp.isoformat() }}</small>
+              </div>
+              <div style="margin-top:6px">
+                <em>Severity: {{ a.severity }}</em>
+              </div>
+              <pre style="background:#f8f8f8;padding:8px;margin-top:8px;white-space:pre-wrap">{{ a.details }}</pre>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="card">No audits found for this device.</div>
+      {% endif %}
+    </div>
+    <script>
+      async function installClient(){
+        if (!confirm('Install client on this device?')) return;
+        const res = await fetch('/devices/{{ device.id }}/install-client', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({server_url: window.location.origin})});
+        if (res.status === 403) { alert('Login required'); window.location='/login'; return; }
+        if (!res.ok) { alert('Install failed: '+(await res.text())); return; }
+        const j = await res.json();
+        const w = window.open('', '_blank', 'width=800,height=600,scrollbars=yes');
+        if (w){ w.document.write('<pre style="white-space:pre-wrap;font-family:monospace;padding:12px">'+JSON.stringify(j, null, 2)+'</pre>'); w.document.title = 'Install results'; }
+        else { alert('Install results:\n'+JSON.stringify(j)); }
+      }
+
+    
+      async function regenerateToken(){
+        if (!confirm('Regenerate device token? This will invalidate the old token.')) return;
+        const res = await fetch('/devices/{{ device.id }}/token/regenerate', {method:'POST', headers:{'Content-Type':'application/json'}});
+        if (!res.ok) { alert('Regenerate failed: '+(await res.text())); return; }
+        const j = await res.json();
+        document.getElementById('deviceToken').textContent = j.token;
+        alert('New token generated and shown on screen. Store it on device before removing access to old token.');
+      }
+    </script>
+  </body>
+</html>

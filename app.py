@@ -6,6 +6,7 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import os
+import secrets
 from cryptography.fernet import Fernet, InvalidToken
 
 app = Flask(__name__)
@@ -30,6 +31,7 @@ class Device(db.Model):
     _host = db.Column('host', db.LargeBinary, nullable=False)
     _username = db.Column('username', db.LargeBinary)
     _password = db.Column('password', db.LargeBinary)
+    _token = db.Column('token', db.LargeBinary)
     port = db.Column(db.Integer, default=22)
 
     # transparent encrypted properties
@@ -104,12 +106,44 @@ class Device(db.Model):
         b = v.encode('utf-8')
         self._password = FERNET.encrypt(b) if FERNET else b
 
+    @property
+    def token(self):
+        if not self._token:
+            return None
+        if isinstance(self._token, str):
+            return self._token
+        if isinstance(self._token, (bytes, bytearray)):
+            if FERNET:
+                try:
+                    return FERNET.decrypt(self._token).decode('utf-8')
+                except InvalidToken:
+                    return None
+            return self._token.decode('utf-8')
+        return None
+
+    @token.setter
+    def token(self, v):
+        if v is None:
+            self._token = None
+            return
+        b = v.encode('utf-8')
+        self._token = FERNET.encrypt(b) if FERNET else b
+
 class Deployment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     device_id = db.Column(db.String, db.ForeignKey('device.id'))
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     success = db.Column(db.Boolean)
     output = db.Column(db.Text)
+
+
+class Audit(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    device_id = db.Column(db.String, db.ForeignKey('device.id'))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    severity = db.Column(db.String)
+    summary = db.Column(db.String)
+    details = db.Column(db.Text)
 
 
 class Policy(db.Model):
@@ -132,6 +166,17 @@ class User(UserMixin, db.Model):
 
 with app.app_context():
     db.create_all()
+    # Ensure 'token' column exists in the device table (SQLite will allow ALTER TABLE ADD COLUMN)
+    try:
+        res = db.session.execute("PRAGMA table_info(device)").fetchall()
+        cols = [r[1] for r in res]
+        if 'token' not in cols:
+            # add token column as BLOB
+            db.session.execute("ALTER TABLE device ADD COLUMN token BLOB")
+            db.session.commit()
+    except Exception:
+        # non-fatal if PRAGMA/ALTER fails on some DBs; column may already exist
+        app.logger.debug('PRAGMA/ALTER for token column skipped or failed')
     # bootstrap a default admin user if no users exist
     # Default credentials: username 'Admin', password 'TestPassword'
     if User.query.count() == 0:
@@ -208,10 +253,21 @@ def add_device():
         except (ValueError, TypeError):
             return jsonify({'status': 'error', 'message': 'invalid port'}), 400
 
+    # preserve existing token if merging an existing device
+    existing = Device.query.get(data['id'])
     d = Device(id=data['id'], port=port)
     d.host = data['host']
     d.username = data.get('username')
     d.password = data.get('password')
+    if existing and existing.token:
+        d.token = existing.token
+    else:
+        # generate a device token for authenticating audit posts
+        tok = secrets.token_urlsafe(24)
+        d.token = tok
+        # include token in response so admin can provision device
+        data = dict(data)
+        data['_token'] = tok
     db.session.merge(d)
     db.session.commit()
     return jsonify({'status': 'ok', 'device': data})
@@ -331,18 +387,22 @@ def deploy():
     if not targets:
         return jsonify({'status': 'error', 'message': 'No targets found'}), 400
 
+    app.logger.info('deploy: submitting policy to %d targets', len(targets))
     # submit tasks
     futures = {executor.submit(ssh_mgr.push_policy, {'id': d.id, 'host': d.host, 'username': d.username, 'password': d.password, 'port': d.port}, policy): d for d in targets}
     results = []
     for fut in as_completed(futures):
         target = futures[fut]
+        app.logger.info('deploy: waiting for result for %s', target.id)
         try:
             res = fut.result()
             success = True
             output = res
+            app.logger.info('deploy: success for %s', target.id)
         except Exception as e:
             success = False
             output = str(e)
+            app.logger.warning('deploy: failure for %s error=%s', target.id, output)
 
         # record deployment
         rec = Deployment(device_id=target.id, success=success, output=output)
@@ -436,6 +496,144 @@ def device_top(device_id):
             app.logger.exception('fallback ps failed for %s', device_id)
             return jsonify({'status':'error','message':str(e2)}), 500
     return app.response_class(out, mimetype='text/plain')
+
+
+@app.route('/devices/<device_id>/audits', methods=['POST'])
+def receive_audit(device_id):
+    """Endpoint for devices to POST security audit results.
+    Devices must include header 'X-Device-Token' with their token.
+    """
+    d = Device.query.get(device_id)
+    if not d:
+        return jsonify({'status':'error','message':'device not found'}), 404
+    token = request.headers.get('X-Device-Token') or request.args.get('token')
+    if not token or token != d.token:
+        app.logger.warning('unauthorized audit post for %s from %s', device_id, request.remote_addr)
+        return jsonify({'status':'error','message':'unauthorized'}), 403
+    data = request.json or {}
+    severity = data.get('severity') or 'info'
+    summary = data.get('summary') or data.get('title') or 'security audit'
+    details = data.get('details') or data.get('report') or ''
+    a = Audit(device_id=device_id, severity=severity, summary=summary, details=details)
+    db.session.add(a)
+    db.session.commit()
+    return jsonify({'status':'ok', 'id': a.id})
+
+
+@app.route('/devices/<device_id>/audits', methods=['GET'])
+@login_required
+def view_audits(device_id):
+    d = Device.query.get(device_id)
+    if not d:
+        return jsonify({'status':'error','message':'device not found'}), 404
+    rows = Audit.query.filter_by(device_id=device_id).order_by(Audit.timestamp.desc()).all()
+    return render_template('device_audits.html', device=d, audits=rows, logged_in=is_logged_in())
+
+
+@app.route('/devices/<device_id>/install-client', methods=['POST'])
+def install_client_on_device(device_id):
+    """Trigger server to push the audit client to the device and install as a systemd service.
+
+    JSON body (optional): {"server_url": "http://portal:5000"}
+    """
+    if not is_logged_in():
+        return jsonify({'status': 'error', 'message': 'unauthorized'}), 403
+    d = Device.query.get(device_id)
+    if not d:
+        return jsonify({'status':'error','message':'device not found'}), 404
+    data = request.json or {}
+    server_url = data.get('server_url') or request.host_url.rstrip('/')
+    # ensure device has a token
+    token = d.token
+    if not token:
+        # generate and persist
+        tok = __import__('secrets').token_urlsafe(24)
+        d.token = tok
+        db.session.merge(d)
+        db.session.commit()
+        token = tok
+
+    # read local device client script
+    try:
+        script_text = open('device_client.py', 'r', encoding='utf-8').read()
+    except Exception as e:
+        app.logger.exception('failed reading device_client.py')
+        return jsonify({'status':'error','message':'server missing device_client.py'}), 500
+
+    device_info = {'id': d.id, 'host': d.host, 'port': d.port, 'username': d.username, 'password': d.password}
+
+    try:
+        out = ssh_mgr.install_client(device_info, script_text, server_url=server_url, token=token)
+        return jsonify({'status':'ok','output': out})
+    except Exception as e:
+        app.logger.exception('install_client error for %s', device_id)
+        return jsonify({'status':'error','message': str(e)}), 500
+
+
+@app.route('/devices/<device_id>/token/regenerate', methods=['POST'])
+def regenerate_token(device_id):
+    if not is_logged_in():
+        return jsonify({'status': 'error', 'message': 'unauthorized'}), 403
+    d = Device.query.get(device_id)
+    if not d:
+        return jsonify({'status':'error','message':'device not found'}), 404
+    tok = __import__('secrets').token_urlsafe(32)
+    d.token = tok
+    db.session.merge(d)
+    db.session.commit()
+    return jsonify({'status':'ok', 'token': tok})
+
+
+@app.route('/devices/install-client', methods=['POST'])
+def install_client_bulk():
+    """Install the client on multiple selected devices.
+    Expects JSON: {"ids": ["dev1", "dev2"], "server_url": "http://..."}
+    """
+    if not is_logged_in():
+        return jsonify({'status': 'error', 'message': 'unauthorized'}), 403
+    payload = request.json or {}
+    ids = payload.get('ids') or []
+    server_url = payload.get('server_url') or request.host_url.rstrip('/')
+    if not ids:
+        return jsonify({'status':'error','message':'no ids provided'}), 400
+
+    # read the client script once
+    try:
+        script_text = open('device_client.py', 'r', encoding='utf-8').read()
+    except Exception:
+        app.logger.exception('failed reading device_client.py for bulk install')
+        return jsonify({'status':'error','message':'server missing device_client.py'}), 500
+
+    results = {}
+    for did in ids:
+        d = Device.query.get(did)
+        if not d:
+            results[did] = {'status':'error','message':'device not found'}
+            continue
+        token = d.token
+        if not token:
+            tok = __import__('secrets').token_urlsafe(24)
+            d.token = tok
+            db.session.merge(d)
+            db.session.commit()
+            token = tok
+        device_info = {'id': d.id, 'host': d.host, 'port': d.port, 'username': d.username, 'password': d.password}
+        try:
+            out = ssh_mgr.install_client(device_info, script_text, server_url=server_url, token=token)
+            results[did] = {'status':'ok','output': out}
+        except Exception as e:
+            app.logger.exception('bulk install failed for %s', did)
+            results[did] = {'status':'error','message': str(e)}
+
+    return jsonify({'results': results})
+
+
+@app.route('/api/devices/<device_id>/audits', methods=['GET'])
+@login_required
+def api_audits(device_id):
+    rows = Audit.query.filter_by(device_id=device_id).order_by(Audit.timestamp.desc()).limit(200).all()
+    out = [{'id': r.id, 'timestamp': r.timestamp.isoformat(), 'severity': r.severity, 'summary': r.summary, 'details': r.details} for r in rows]
+    return jsonify({'audits': out})
 
 
 if __name__ == '__main__':

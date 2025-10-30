@@ -34,6 +34,7 @@
               <div>
                 <label class="small" style="margin-right:8px"><input type="checkbox" id="selectAll"> Select all</label>
                 <button class="btn secondary" id="deleteSelectedBtn" onclick="deleteSelected()">Delete selected</button>
+                <button class="btn" id="installSelectedBtn" onclick="installSelected()">Install client</button>
               </div>
             </div>
             <div class="devices-list">
@@ -49,7 +50,7 @@
                   </div>
                   <div class="controls small">
                     <span class="small">Port {{ d.port or 22 }}</span>
-                    <button class="btn secondary" onclick="viewLogs('{{ d.id }}')">Logs</button>
+                    <button class="btn secondary" onclick="window.location='/devices/{{ d.id }}/audits'">Security</button>
                     <button class="btn secondary" onclick="renameDevice('{{ d.id }}')">Rename</button>
                     <button class="btn" onclick="showTop('{{ d.id }}')">Top</button>
                   </div>
@@ -212,6 +213,27 @@
         const checked = e.target.checked;
         document.querySelectorAll('.target-checkbox').forEach(cb => cb.checked = checked);
       });
+
+      async function installSelected(){
+        const checked = Array.from(document.querySelectorAll('.target-checkbox:checked')).map(cb=>cb.value);
+        if (!checked.length) return alert('No devices selected');
+        if (!confirm('Install client to selected devices? This will SSH to each device and attempt to install the audit client.')) return;
+        const serverUrl = window.location.origin; // default to current portal
+        const res = await fetch('/devices/install-client', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids:checked, server_url: serverUrl})});
+        if (res.status === 403) { alert('Login required'); window.location='/login'; return; }
+        if (!res.ok) { alert('Install failed: '+(await res.text())); return; }
+        const j = await res.json();
+        // open a small window with formatted output
+        const w = window.open('', '_blank', 'width=800,height=600,scrollbars=yes');
+        if (w){
+          w.document.write('<pre style="white-space:pre-wrap;font-family:monospace;padding:12px">'+JSON.stringify(j, null, 2)+'</pre>');
+          w.document.title = 'Install results';
+        } else {
+          alert('Install results:\n'+JSON.stringify(j));
+        }
+        // reload to reflect any changed device tokens or status
+        setTimeout(()=>location.reload(), 1500);
+      }
 
       function viewLogs(id){
         // naive view: fetch deployments and show entries for id

@@ -5,3 +5,4 @@ gunicorn
 SQLAlchemy>=1.4
 Flask-Login>=0.6
 cryptography
+requests>=2.28
